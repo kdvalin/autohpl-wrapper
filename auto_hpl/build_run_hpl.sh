@@ -578,7 +578,7 @@ run_hpl()
   cmd_prefix=""
   if [ $use_openmpi -eq 1 ];then
     cmd_prefix="$MPI_PATH/bin/mpirun --allow-run-as-root -np $num_mpi --mca btl self,vader --report-bindings $bind_settings"
-  fi
+  fi  
   echo  "$cmd_prefix ./xhpl"
 
   echo "     T/V           N    NB     P     Q               Time                 Gflops"  > $outfile
@@ -637,6 +637,7 @@ NO_ARGUMENTS=(
 	"use_mkl"
 	"use_blis"
 	"regression"
+  "no_openmpi"
 )
 
 # read arguments
