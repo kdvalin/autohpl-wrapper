@@ -72,6 +72,7 @@ HPL_PATH=$run_dir/hpl
 SCRIPT_DIR=$run_dir
 tools_git=https://github.com/redhat-performance/test_tools-wrappers
 sleep_for=0
+use_openmpi=1
 
 usage()
 {
@@ -81,6 +82,7 @@ usage()
 	echo "  --use_mkl: use the mkl lib."
 	echo "  --use_blis: use the blis lib."
 	echo "  --regression: limit the amount of memory for regression."
+  echo "  --no_openmpi: Skip using openmpi to run autohpl"
 	source test_tools/general_setup --usage
 	exit 0
 }
@@ -156,47 +158,53 @@ size_platform()
   /usr/bin/lscpu > $LSCPU
   arch=$(grep "Architecture:" $LSCPU | cut -d: -f 2|sed s/\ //g)
   vendor=$(grep "Vendor ID:" $LSCPU | cut -d: -f 2|tr -cd '[:alnum:]' | sed -e s/^[[:space:]]*//g -e s/[[:space:]]*$//g)
-  if [[ "$arch" == "x86_64" ]]; then
-    BLAS_MT=1 #Set 1 to use Multi-thread BLAS, 0 for single thread
+  os=`./test_tools/detect_os`
 
-    if [ $ubuntu -eq 0 ]; then
-      MPI_PATH=/usr/lib64/openmpi
-    elif [ $aws -eq 1 ]; then
+  if [ $use_openmpi -eq 1 ]; then
+    case "$os" in
+      "ubuntu")
+        MPI_PATH=/usr/lib64/openmpi
+      ;;
+      "aws")
         MPI_PATH=/usr/lib64/openmpi/bin/
-    else
-      MPI_PATH=/usr/
-    fi
-    family=$(grep "CPU family" $LSCPU | cut -d: -f 2)
-    #
-    # Strip off the weird marketing names
-    # Due to AWS being stupid on the naming, we need to
-    # search as part of a string.
-    #
-    if [[ "$vendor" == *"AuthenticAMD"* ]]; then
-      vendor="AMD"
-    elif [[ "$vendor" == *"GenuineIntel"* ]]; then
-      vendor="Intel"
-    else
-      exit_out "Unrecognized CPU vendor ${vendor}, exiting" 1
-    fi
-    if [[ "$vendor" -ne "AMD" && "$use_blis" == 1 ]]; then
-      exit_out "BLIS library support is only for AMD CPUs" 1
-    fi
-    if [[ "$vendor" -ne "Intel" && "use_mkl" == 1 ]]; then
-	exit_out "Error: mkl is only for INTEL" 1
-    fi
-  elif [[ "$arch" == "aarch64" ]]; then
-    BLAS_MT=1
-    if [ $ubuntu -eq 0 ]; then
-      MPI_PATH=/usr/lib64/openmpi
-    elif [ $aws -eq 1 ]; then
-        MPI_PATH=/usr/lib64/openmpi/bin/
-    else
-      MPI_PATH=/usr/
-    fi
-  else
-    exit_out "Error: Architecture $arch is unsupported" 1
+        ;;
+      *)
+        MPI_PATH=/usr/
+      ;;
+    esac
   fi
+
+  BLAS_MT=1 #Set 1 to use Multi-thread BLAS, 0 for single thread
+  case "$arch" in
+    "x86_64")
+      family=$(grep "CPU family" $LSCPU | cut -d: -f 2)
+      #
+      # Strip off the weird marketing names
+      # Due to AWS being stupid on the naming, we need to
+      # search as part of a string.
+      #
+      if [[ "$vendor" == *"AuthenticAMD"* ]]; then
+        vendor="AMD"
+      elif [[ "$vendor" == *"GenuineIntel"* ]]; then
+        vendor="Intel"
+      else
+        exit_out "Unrecognized CPU vendor ${vendor}, exiting" 1
+      fi
+
+      if [[ "$vendor" -ne "AMD" && "$use_blis" == 1 ]]; then
+        exit_out "BLIS library support is only for AMD CPUs" 1
+      fi
+      if [[ "$vendor" -ne "Intel" && "use_mkl" == 1 ]]; then
+        exit_out "Error: mkl is only for INTEL" 1
+      fi
+    ;;
+    "aarch64") #Nothing special needs to be done for arm64
+    ;;
+    *)
+      exit_out "Error: Architecture $arch is unsupported" 1
+    ;;
+  esac
+
   model=$(grep "Model:" $LSCPU | cut -d: -f 2|sed -e s/^[[:space:]]*//g -e s/[[:space:]]*$//g)
   stepping=$(grep "Stepping:" $LSCPU | cut -d: -f 2)
   nodes=$(grep "NUMA node(s):" $LSCPU | cut -d: -f 2)
@@ -567,12 +575,15 @@ run_hpl()
   fi
   echo "bind_settings=$bind_settings"
 
-  echo  "$MPI_PATH/bin/mpirun --allow-run-as-root -np $num_mpi --mca btl self,vader --report-bindings $bind_settings ./xhpl"
+  cmd_prefix=""
+  if [ $use_openmpi -eq 1 ];then
+    cmd_prefix="$MPI_PATH/bin/mpirun --allow-run-as-root -np $num_mpi --mca btl self,vader --report-bindings $bind_settings"
+  echo  "$cmd_prefix ./xhpl"
 
   echo "     T/V           N    NB     P     Q               Time                 Gflops"  > $outfile
   for i in $(seq "$NUM_ITER")
   do
-    $MPI_PATH/bin/mpirun --allow-run-as-root -np $num_mpi --mca btl self,vader --report-bindings $bind_settings ./xhpl 2>&1 > hpl.out
+    $cmd_prefix ./xhpl 2>&1 > hpl.out
     cat hpl.out | grep -E "WC|WR"  >> $outfile
   done
   cp $outfile $SCRIPT_DIR
@@ -582,7 +593,9 @@ run_hpl()
 install_run_hpl()
 {
   size_platform
-  check_mpi
+  if [ $use_openmpi -eq 1 ]; then
+    check_mpi
+  fi
   clean_env
   if [[ "$arch" == "x86_64" ]]; then
     # Build AMD's special BLIS package
@@ -645,6 +658,10 @@ while [[ $# -gt 0 ]]; do
     --use_mkl)
       use_mkl=1
       echo "set use_mkl to $use_mkl"
+      shift 1
+    ;;
+    --no_openmpi)
+      use_openmpi=0
       shift 1
     ;;
     --use_blis)
